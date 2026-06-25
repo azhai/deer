@@ -16,9 +16,10 @@
 *.ll
 *.o
 *.tok
-fib
-toy
+deer
 
+.arts/
+.codeartsdoer/
 .git/
 .idea/
 .vscode/

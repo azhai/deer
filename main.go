@@ -3,12 +3,15 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
-	"github.com/davecgh/go-spew/spew"
+	"github.com/sanity-io/litter"
 	"tinygo.org/x/go-llvm"
 )
 
@@ -18,25 +21,40 @@ var (
 	optimize = flag.Int("O", 0, "the level of optimization")
 	output   = flag.String("o", "", "output filename")
 	verbose  = flag.Bool("v", false, "verbose output")
-	writer   *os.File
-	err      error
+	writer   io.Writer
 )
+
+var dumpConfig = litter.Options{
+	HomePackage:       "main",
+	StripPackageNames: true,
+	HidePrivateFields: false,
+	Separator:         "\n",
+}
 
 func main() {
 	flag.Parse()
 	files := flag.Args()
 	if len(files) == 0 {
-		return
+		fmt.Fprintln(os.Stderr, "Usage: deer [options] <input files>")
+		flag.PrintDefaults()
+		os.Exit(1)
 	}
+
+	logLevel := slog.LevelError
+	if *verbose {
+		logLevel = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: logLevel,
+	})))
+
 	initExecutionEngine()
-	if *optimize > 0 {
-		Optimize()
-	}
 
 	needWrite, filename, extname := true, "", ""
 	if *output == "" {
 		if *dumpIR || *execProg {
 			needWrite = false
+			writer = os.Stdout
 		} else {
 			filename = filepath.Base(files[0])
 			pos := len(filename) - len(filepath.Ext(filename))
@@ -44,14 +62,17 @@ func main() {
 		}
 	}
 	filename = *output
+	var outFile *os.File
 	if needWrite {
 		extname = strings.ToLower(filepath.Ext(*output))
 		if extname == "" {
 			filename += ".o"
 		}
-		writer, err = os.Create(filename)
+		var err error
+		outFile, err = os.Create(filename)
 		handleError(true, "can not open the file:", err)
-		defer writer.Close()
+		defer outFile.Close()
+		writer = outFile
 	}
 
 	lex := Lex()
@@ -67,7 +88,7 @@ func main() {
 	tokens := lex.Tokens()
 	if extname == ".tok" {
 		for tok := range tokens {
-			spew.Fdump(writer, tok)
+			fmt.Fprintf(writer, "%s: %s\n", tok.pos, tok)
 		}
 		if needWrite {
 			return
@@ -88,19 +109,26 @@ func main() {
 	switch extname {
 	case ".ast":
 		for nod := range nodes {
-			spew.Fdump(writer, nod)
+			fmt.Fprintln(writer, dumpConfig.Sdump(nod))
 		}
 	case ".bc":
 		VisitNodes(nodes, nil)
-		llvm.WriteBitcodeToFile(rootModule, writer)
+		if *optimize > 0 {
+			Optimize()
+		}
+		llvm.WriteBitcodeToFile(rootModule, outFile)
 	default:
 		obj, err := Compile(nodes, rootModule)
 		handleError(true, "can not emit object file to memory buffer:", err)
-		_, err = writer.Write(obj)
+		_, err = outFile.Write(obj)
 		handleError(true, "write to file failure:", err)
 		if extname == "" {
-			cmd := exec.Command("clang", "-o", *output, "lib.c", filename)
-			// fmt.Println(cmd.String())
+			args := []string{"-o", *output, "lib.c", filename}
+			if runtime.GOOS != "darwin" {
+				args = append(args, "-lm")
+			}
+			cmd := exec.Command("clang", args...)
+			slog.Debug("linking", "cmd", cmd.String())
 			handleError(true, "build failure:", cmd.Run())
 			os.Chmod(*output, 0755)
 		}
@@ -112,10 +140,10 @@ func handleError(isExit bool, msg string, err error) {
 		return
 	}
 	if len(msg) > 0 {
-		fmt.Println(msg)
+		fmt.Fprintln(os.Stderr, msg)
 	}
-	fmt.Println(err)
+	fmt.Fprintln(os.Stderr, err)
 	if isExit {
-		os.Exit(-1)
+		os.Exit(1)
 	}
 }

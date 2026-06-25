@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
+	"unsafe"
 
 	"tinygo.org/x/go-llvm"
 )
@@ -11,7 +14,7 @@ func VisitNodes(roots <-chan node, action func(node, llvm.Value)) {
 	for nod := range roots {
 		val := nod.codegen()
 		if val.IsNil() {
-			fmt.Fprintln(os.Stderr, "Error: Codegen failed; skipping.")
+			slog.Warn("codegen failed for node, skipping", "node", fmt.Sprintf("%v", nod))
 			continue
 		}
 		if action != nil {
@@ -22,6 +25,9 @@ func VisitNodes(roots <-chan node, action func(node, llvm.Value)) {
 
 func Compile(roots <-chan node, module llvm.Module) ([]byte, error) {
 	VisitNodes(roots, nil)
+	if *optimize > 0 {
+		Optimize()
+	}
 	buffer, err := machine.EmitToMemoryBuffer(module, llvm.ObjectFile)
 	if err != nil {
 		return nil, err
@@ -30,35 +36,58 @@ func Compile(roots <-chan node, module llvm.Module) ([]byte, error) {
 }
 
 func EmitIR(roots <-chan node) {
-	fmt.Fprintln(os.Stdout, rootModule.String())
+	fmt.Fprintln(os.Stdout, "; ModuleID = 'deer'")
 	VisitNodes(roots, func(nod node, val llvm.Value) {
 		val.Dump()
 	})
 }
 
-// Exec JIT-compiles the top level statements in the roots chan and,
-// if they are expressions, executes them.
 func Exec(roots <-chan node) {
-	VisitNodes(roots, func(nod node, val llvm.Value) {
-		if isTopLevelExpr(nod) {
-			returnval := execEngine.RunFunction(val, []llvm.GenericValue{})
-			fmt.Printf("Evaluated to: %v\n", returnval.Float(llvm.DoubleType()))
+	// First pass: codegen all nodes so MCJIT sees the complete module.
+	type entry struct {
+		nod node
+		val llvm.Value
+	}
+	var entries []entry
+	for nod := range roots {
+		val := nod.codegen()
+		if val.IsNil() {
+			slog.Warn("codegen failed for node, skipping", "node", fmt.Sprintf("%v", nod))
+			continue
 		}
-	})
+		entries = append(entries, entry{nod, val})
+	}
+	// Second pass: run top-level expressions now that the module is complete.
+	for _, e := range entries {
+		if isTopLevelExpr(e.nod) {
+			_, name := getFuncName(e.nod)
+			addr := execEngine.GetFunctionAddress(name)
+			if addr == 0 {
+				slog.Error("failed to get function address", "name", name)
+				continue
+			}
+			result := callNativeFunc(unsafe.Pointer(uintptr(addr)))
+			slog.Debug("evaluated expression", "result", result)
+		}
+	}
 }
 
-// getFuncName determines if the node is function and its name.
 func getFuncName(n node) (bool, string) {
 	if n.Kind() != nodeFunction {
 		return false, ""
 	}
-	name := n.(*functionNode).proto.(*fnPrototypeNode).name
-	return true, name
+	fn, ok := n.(*functionNode)
+	if !ok {
+		return false, ""
+	}
+	p, ok := fn.proto.(*fnPrototypeNode)
+	if !ok {
+		return false, ""
+	}
+	return true, p.name
 }
 
-// isTopLevelExpr determines if the node is a top level expression.
-// Top level expressions are function nodes with no name.
 func isTopLevelExpr(n node) bool {
 	isFunc, name := getFuncName(n)
-	return isFunc && (name == "" || name == "main")
+	return isFunc && (strings.HasPrefix(name, "__anon") || name == "main")
 }

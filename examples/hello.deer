@@ -1,0 +1,18 @@
+# Hello World - print characters
+extern putchard(x)
+extern printd(x)
+
+# Sequencing operator: evaluate x, then return y
+def binary : 1 (x, y) y
+
+def newline() putchard(10)
+
+# Print "Hello" using ASCII codes
+def main()
+  putchard(72) :  # H
+  putchard(101) : # e
+  putchard(108) : # l
+  putchard(108) : # l
+  putchard(111) : # o
+  newline() :
+  printd(42)

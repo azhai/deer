@@ -5,51 +5,41 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/davecgh/go-spew/spew"
+	"github.com/sanity-io/litter"
 	"tinygo.org/x/go-llvm"
 )
 
-// A parser holds the internal state of the AST being constructed. Instead of
-// composing top-level statements into branches under the AST root, they are
-// send along a node channel that can be codegen'd and executed. This allows
-// us to begin code generation and execution before we have finished parsing
-// input (and/or allows us to use one parser during interactive mode instead
-// of creating a new one for each line).
 type parser struct {
-	name               string         // name of current file whose tokens are being recieved; used in error reporting
-	tokens             <-chan token   // channel of tokens from the lexer
-	token              token          // current token, most reciently recieved
-	topLevelNodes      chan node      // channel of parsed top-level statements
-	binaryOpPrecedence map[string]int // maps binary operators to the precidence determining the order of operations
+	name               string
+	tokens             <-chan token
+	token              token
+	topLevelNodes      chan node
+	binaryOpPrecedence map[string]int
 }
 
-// Parse creates and runs a new parser, returning a channel of
-// top-level AST sub-trees for further processing.
 func Parse(tokens <-chan token) <-chan node {
 	p := &parser{
 		tokens:        tokens,
 		topLevelNodes: make(chan node, 100),
 		binaryOpPrecedence: map[string]int{
 			"=": 2,
+			"|": 6,
+			"&": 8,
 			"<": 10,
+			">": 10,
 			"+": 20,
 			"-": 20,
 			"*": 40,
 			"/": 40,
+			"%": 40,
 		},
 	}
 	go p.parse()
 	return p.topLevelNodes
 }
 
-// parse is the parsing main loop. It receives tokens and begins
-// the recursive decent until a nil or top-level sub-tree is
-// returned. Non-nils are sent to the topLevelNode channel;
-// nils are discarded (they indicate either errors, semicolons
-// or file boundaries). Once the tokens channel is empty & closed,
-// it closes its own topLevelNodes channel.
 func (p *parser) parse() {
-	for p.next(); p.token.kind > tokError; { //p.next() { // may want/need to switch this back once i introduce statement delineation
+	for p.next(); p.token.kind > tokError; {
 		topLevelNode := p.parseTopLevelStmt()
 		if topLevelNode != nil {
 			p.topLevelNodes <- topLevelNode
@@ -57,14 +47,12 @@ func (p *parser) parse() {
 	}
 
 	if p.token.kind == tokError {
-		spew.Dump(p.token)
+		fmt.Fprintf(os.Stderr, "Lex error at %s: %s\n", p.token.pos, p.token.val)
+		litter.Dump(p.token)
 	}
 	close(p.topLevelNodes)
 }
 
-// next advances to the next useful token, discarding tokens
-// that the parser doesn't need to handle like whitespace and
-// comments.
 func (p *parser) next() token {
 	for p.token = <-p.tokens; p.token.kind == tokSpace ||
 		p.token.kind == tokComment; p.token = <-p.tokens {
@@ -72,20 +60,19 @@ func (p *parser) next() token {
 	return p.token
 }
 
-// parseTopLevelStmt determines if the current token is the
-// beginning of a function definition, external declaration or
-// a top level expression. Semicolons are ignored;
-// file transitions change the parser's file name variable.
-// --
-// TODO: don't return nil for non-error, non-done conditions
-// TODO: create BadDef, BadExpr, BadExtern nodes
 func (p *parser) parseTopLevelStmt() node {
+	// Once `:` is defined as a user binary operator (via `def binary :`),
+	// it is tokenized as tokUserBinaryOp instead of tokColon. Handle both.
+	if p.token.kind == tokUserBinaryOp && p.token.val == ":" {
+		p.next()
+		return nil
+	}
 	switch p.token.kind {
 	case tokNewFile:
 		p.name = p.token.val
 		p.next()
 		return nil
-	case tokSemicolon:
+	case tokSemicolon, tokColon:
 		p.next()
 		return nil
 	case tokDefine:
@@ -97,12 +84,11 @@ func (p *parser) parseTopLevelStmt() node {
 	}
 }
 
-// parseDefinition parses top level function definitions.
 func (p *parser) parseDefinition() node {
 	pos := p.token.pos
 	p.next()
 	proto := p.parsePrototype()
-	if p == nil {
+	if proto == nil {
 		return nil
 	}
 
@@ -118,27 +104,21 @@ func (p *parser) parseExtern() node {
 	return p.parsePrototype()
 }
 
-// parseTopLevelExpr parses top level expressions by wrapping them
-// into unnamed functions. The name "" signals that this statement
-// is to be executed directly.
+var anonFuncCounter int
+
 func (p *parser) parseTopLevelExpr() node {
 	pos := p.token.pos
 	e := p.parseExpression()
 	if e == nil {
 		return nil
 	}
-	proto := &fnPrototypeNode{nodeFnPrototype, pos, "", nil, false, 0} // fnName, ArgNames, kind != idef, precedence}
+	anonFuncCounter++
+	name := fmt.Sprintf("__anon%d", anonFuncCounter)
+	proto := &fnPrototypeNode{nodeFnPrototype, pos, name, nil, false, 0}
 	f := &functionNode{nodeFunction, pos, proto, e}
 	return f
 }
 
-// parsePrototype parses function prototypes. First it determines if
-// the function is named. If the name is "unary" or "binary", then
-// the prototype is for a user-defined operator. Binary ops may have
-// an optional precedence specified to determine the order of
-// operations.
-// e.g. name(arg1, arg2, arg3)
-// e.g. binary ∆ 50 (lhs rhs)
 func (p *parser) parsePrototype() node {
 	pos := p.token.pos
 	if p.token.kind != tokIdentifier &&
@@ -160,11 +140,11 @@ func (p *parser) parsePrototype() node {
 
 	switch fnName {
 	case "unary":
-		fnName += p.token.val // unary^
+		fnName += p.token.val
 		kind = unary
 		p.next()
 	case "binary":
-		fnName += p.token.val // binary^
+		fnName += p.token.val
 		op := p.token.val
 		kind = binary
 		p.next()
@@ -173,21 +153,21 @@ func (p *parser) parsePrototype() node {
 			var err error
 			precedence, err = strconv.Atoi(p.token.val)
 			if err != nil {
-				return Error(p.token, "\ninvalid precedence")
+				return Error(p.token, "invalid precedence")
 			}
 			p.next()
 		}
-		p.binaryOpPrecedence[op] = precedence // make sure to take this out of codegen later if we're going to keep it here.
+		p.binaryOpPrecedence[op] = precedence
 	}
 
 	if p.token.kind != tokLeftParen {
 		return Error(p.token, "expected '(' in prototype")
 	}
 
-	ArgNames := []string{}
+	argNames := []string{}
 	for p.next(); p.token.kind == tokIdentifier || p.token.kind == tokComma; p.next() {
 		if p.token.kind != tokComma {
-			ArgNames = append(ArgNames, p.token.val)
+			argNames = append(argNames, p.token.val)
 		}
 	}
 	if p.token.kind != tokRightParen {
@@ -195,54 +175,41 @@ func (p *parser) parsePrototype() node {
 	}
 
 	p.next()
-	if kind != idef && len(ArgNames) != kind {
+	if kind != idef && len(argNames) != kind {
 		return Error(p.token, "invalid number of operands for operator")
 	}
-	return &fnPrototypeNode{nodeFnPrototype, pos, fnName, ArgNames, kind != idef, precedence}
+	return &fnPrototypeNode{nodeFnPrototype, pos, fnName, argNames, kind != idef, precedence}
 }
 
-// parseExpression parses expressions. First, it tries to parse
-// the current token as the beginning of a unary expression. If
-// the result is non-null, it will parse the rest as the right-
-// hand side of a binary expression.
-// e.g. !!5 + sin(2 * 4) - 2 -> {!!5} {+ sin(2 * 4) - 2}
 func (p *parser) parseExpression() node {
-	lhs := p.parseUnarty()
+	lhs := p.parseUnary()
 	if lhs == nil {
 		return nil
 	}
 
 	return p.parseBinaryOpRHS(1, lhs)
-	// TODO: check on this value wrt our : = and 0 val for not found instead of tut's -1
-} /// also this way of hacking on left to right preference on top of operator precedence can fail if we have more expressions than the difference in the op pref, right?
+}
 
-// parseUnarty parses unary expressions. If the current token is
-// not a unary operator, parse it as a primary expression; otherwise,
-// return a unaryNode, parsing the operand of the unary operator as
-// another unary expression (so as to allow chaining of unary ops).
-func (p *parser) parseUnarty() node {
+func (p *parser) parseUnary() node {
 	pos := p.token.pos
-	// If we're not an operator, parse as primary {this is correcp.}
 	if p.token.kind < tokUserUnaryOp {
 		return p.parsePrimary()
 	}
 
 	name := p.token.val
 	p.next()
-	operand := p.parseUnarty()
+	operand := p.parseUnary()
 	if operand != nil {
 		return &unaryNode{nodeUnary, pos, name, operand}
 	}
 	return nil
 }
 
-// parseBinaryOpRHS parses the operator and right-hand side of a
-// binary operator expression. <TODO: describe algo after it's been cleaned up a bit>
 func (p *parser) parseBinaryOpRHS(exprPrec int, lhs node) node {
 	pos := p.token.pos
 	for {
 		if p.token.kind < tokUserUnaryOp {
-			return lhs // an expression like '5' will get sent back up to parseTopLevelExpr or parseDefinition from here.
+			return lhs
 		}
 		tokenPrec := p.getTokenPrecedence(p.token.val)
 		if tokenPrec < exprPrec {
@@ -251,7 +218,7 @@ func (p *parser) parseBinaryOpRHS(exprPrec int, lhs node) node {
 		binOp := p.token.val
 		p.next()
 
-		rhs := p.parseUnarty()
+		rhs := p.parseUnary()
 		if rhs == nil {
 			return nil
 		}
@@ -268,15 +235,10 @@ func (p *parser) parseBinaryOpRHS(exprPrec int, lhs node) node {
 	}
 }
 
-// getTokenPrecedence returns a binary operator's precedence
 func (p *parser) getTokenPrecedence(token string) int {
 	return p.binaryOpPrecedence[token]
 }
 
-// parsePrimary parses primary expressions. The parser arrives
-// here when operator expressions are gathering their operands.
-// (Or when there are no operators at the top level of a given
-// sub-expression.)
 func (p *parser) parsePrimary() node {
 	switch p.token.kind {
 	case tokIdentifier:
@@ -292,22 +254,18 @@ func (p *parser) parsePrimary() node {
 	case tokLeftParen:
 		return p.parseParenExpr()
 	case tokEndOfTokens:
-		return nil // this token should not be skipped
+		return nil
 	default:
 		oldToken := p.token
 		p.next()
-		return Error(oldToken, "unknown token encountered when expecting expression")
+		return Error(oldToken, "unknown token when expecting expression")
 	}
 }
 
-// parseIdentifierExpr parses user defined identifiers (i.e. variable
-// and function names). If it is a function name, parse any arguments
-// it may take and emit a function call node. Otherwise, emit the variable.
 func (p *parser) parseIdentifierExpr() node {
 	pos := p.token.pos
 	name := p.token.val
 	p.next()
-	// are we a variable? else function call
 	if p.token.kind != tokLeftParen {
 		return &variableNode{nodeVariable, pos, name}
 	}
@@ -328,11 +286,8 @@ func (p *parser) parseIdentifierExpr() node {
 	return &fnCallNode{nodeFnCall, pos, name, args}
 }
 
-// parseIfExpr, as the name suggest, parses each part of an if expression
-// and emits the result.
 func (p *parser) parseIfExpr() node {
 	pos := p.token.pos
-	// if
 	p.next()
 	ifE := p.parseExpression()
 	if ifE == nil {
@@ -349,7 +304,7 @@ func (p *parser) parseIfExpr() node {
 	}
 
 	if p.token.kind != tokElse {
-		return Error(p.token, "expected 'else' after then expr")
+		return Error(p.token, "expected 'else' after then expression")
 	}
 	p.next()
 	elseE := p.parseExpression()
@@ -360,8 +315,6 @@ func (p *parser) parseIfExpr() node {
 	return &ifNode{nodeIf, pos, ifE, thenE, elseE}
 }
 
-// parseIfExpr parses each part of a for expression. The increment
-// step is optional and defaults to += 1 if unspecified.
 func (p *parser) parseForExpr() node {
 	pos := p.token.pos
 	p.next()
@@ -390,7 +343,6 @@ func (p *parser) parseForExpr() node {
 		return Error(p.token, "expected end expression after 'for' start expression")
 	}
 
-	// optional step
 	var step node
 	if p.token.kind == tokComma {
 		p.next()
@@ -412,14 +364,12 @@ func (p *parser) parseForExpr() node {
 	return &forNode{nodeFor, pos, counter, start, end, step, body}
 }
 
-// parseVarExpr parses an expression declaring (and using) mutable
-// variables.
 func (p *parser) parseVarExpr() node {
 	pos := p.token.pos
 	p.next()
-	var v = variableExprNode{
+	v := variableExprNode{
 		nodeType: nodeVariableExpr,
-		Pos:      pos,
+		SrcPos:   pos,
 		vars: []struct {
 			name string
 			node node
@@ -428,7 +378,6 @@ func (p *parser) parseVarExpr() node {
 	}
 	var val node
 
-	// this forloop can be simplified greatly.
 	if p.token.kind != tokIdentifier {
 		return Error(p.token, "expected identifier after var")
 	}
@@ -436,7 +385,6 @@ func (p *parser) parseVarExpr() node {
 		name := p.token.val
 		p.next()
 
-		// are we initialized?
 		val = nil
 		if p.token.kind == tokEqual {
 			p.next()
@@ -460,7 +408,6 @@ func (p *parser) parseVarExpr() node {
 		}
 	}
 
-	// 'in'
 	if p.token.kind != tokIn {
 		return Error(p.token, "expected 'in' after 'var'")
 	}
@@ -473,7 +420,6 @@ func (p *parser) parseVarExpr() node {
 	return &v
 }
 
-// parseParenExpr parses expressions offset by parens.
 func (p *parser) parseParenExpr() node {
 	p.next()
 	v := p.parseExpression()
@@ -487,7 +433,6 @@ func (p *parser) parseParenExpr() node {
 	return v
 }
 
-// parseNumericExpr parses number literals.
 func (p *parser) parseNumericExpr() node {
 	pos := p.token.pos
 	val, err := strconv.ParseFloat(p.token.val, 64)
@@ -498,17 +443,12 @@ func (p *parser) parseNumericExpr() node {
 	return &numberNode{nodeNumber, pos, val}
 }
 
-// Helper Functions
-
-// Error prints error message and returns a nil node.
 func Error(t token, str string) node {
-	fmt.Fprintf(os.Stderr, "Error at %v: %v\n\tkind:  %v\n\tvalue: %v\n", t.pos, str, t.kind, t.val)
-	// log.Fatalf("Error at %v: %v\n\tkind:  %v\n\tvalue: %v\n", p.pos, str, p.kind, p.val)
+	fmt.Fprintf(os.Stderr, "Error at %s: %s\n\tgot: %s (%q)\n", t.pos, str, t.kind, t.val)
 	return nil
 }
 
-// ErrorV prints the error message and returns a nil llvm.Value.
 func ErrorV(str string) llvm.Value {
-	fmt.Fprintf(os.Stderr, "Error: %v\n", str)
-	return llvm.Value{nil} // TODO: this is wrong; fix it.
+	fmt.Fprintf(os.Stderr, "Error: %s\n", str)
+	return llvm.Value{nil}
 }

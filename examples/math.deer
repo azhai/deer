@@ -1,0 +1,18 @@
+# Math function examples
+extern printd(x)
+extern sqrt_(x)
+extern pow_(x, y)
+extern sin_(x)
+extern cos_(x)
+
+# Sequencing operator: evaluate x, then return y
+def binary : 1 (x, y) y
+
+# Calculate hypoteneuse
+def hypot(x, y)
+  sqrt_(x*x + y*y)
+
+def main()
+  printd(hypot(3, 4)) :     # should be 5.0
+  printd(pow_(2, 10)) :    # 1024
+  printd(sin_(3.14159/2))  # approx 1.0

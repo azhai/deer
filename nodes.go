@@ -1,38 +1,44 @@
 package main
 
-import "tinygo.org/x/go-llvm"
+import (
+	"fmt"
+	"strings"
 
-// Node Nodes
+	"tinygo.org/x/go-llvm"
+)
 
 type node interface {
 	Kind() nodeType
-	// String() string
-	Position() Pos
+	Position() SrcPos
 	codegen() llvm.Value
 }
 
 type nodeType int
 
-// Pos defines a byte offset from the beginning of the input text.
-type Pos int
+type SrcPos struct {
+	File string
+	Line int
+	Col  int
+	Pos  int
+}
 
-func (p Pos) Position() Pos {
+func (p SrcPos) Position() SrcPos {
 	return p
 }
 
-// In text/template/parse/node.go Rob adds an unexported() method to Pos
-// I do know why he did that rather than make Pos -> pos
+func (p SrcPos) String() string {
+	if p.File != "" {
+		return fmt.Sprintf("%s:%d:%d", p.File, p.Line, p.Col)
+	}
+	return fmt.Sprintf("%d:%d", p.Line, p.Col)
+}
 
-// Type returns itself, embedding into Nodes
 func (t nodeType) Kind() nodeType {
 	return t
 }
 
 const (
-	// literals
 	nodeNumber nodeType = iota
-
-	// expressions
 	nodeIf
 	nodeFor
 	nodeUnary
@@ -40,54 +46,67 @@ const (
 	nodeFnCall
 	nodeVariable
 	nodeVariableExpr
-
-	// non-expression statements
 	nodeFnPrototype
 	nodeFunction
-
-	// other
 	nodeList
 )
 
+var nodeTypeNames = map[nodeType]string{
+	nodeNumber:       "Number",
+	nodeIf:           "If",
+	nodeFor:          "For",
+	nodeUnary:        "Unary",
+	nodeBinary:       "Binary",
+	nodeFnCall:       "FnCall",
+	nodeVariable:     "Variable",
+	nodeVariableExpr: "VarExpr",
+	nodeFnPrototype:  "FnProto",
+	nodeFunction:     "Function",
+	nodeList:         "List",
+}
+
+func (t nodeType) String() string {
+	if name, ok := nodeTypeNames[t]; ok {
+		return name
+	}
+	return fmt.Sprintf("NodeType(%d)", t)
+}
+
 type numberNode struct {
 	nodeType
-	Pos
-
+	SrcPos
 	val float64
 }
 
-// func NewNumberNode(t token, val float64) *numberNode {
-// 	return &numberNode{
-// 		nodeType: nodeNumber,
-// 		Pos:      t.pos,
-// 		val:      val,
-// 	}
-// }
+func (n *numberNode) String() string {
+	return fmt.Sprintf("%g", n.val)
+}
 
 type ifNode struct {
 	nodeType
-	Pos
-
-	// psudeo-Hungarian notation as 'if' & 'else' are Go keywords
+	SrcPos
 	ifN   node
 	thenN node
 	elseN node
 }
 
-// func NewIfNode(t token, ifN, thenN, elseN node) *ifNode {
-// 	return &ifNode{
-// 		nodeType: nodeIf,
-// 		Pos:      t.pos,
-// 		ifN:      ifN,
-// 		thenN:    thenN,
-// 		elseN:    elseN,
-// 	}
-// }
+func (n *ifNode) String() string {
+	var b strings.Builder
+	b.WriteString("(if ")
+	b.WriteString(fmt.Sprintf("%v", n.ifN))
+	b.WriteString(" then ")
+	b.WriteString(fmt.Sprintf("%v", n.thenN))
+	if n.elseN != nil {
+		b.WriteString(" else ")
+		b.WriteString(fmt.Sprintf("%v", n.elseN))
+	}
+	b.WriteString(")")
+	return b.String()
+}
 
 type forNode struct {
 	nodeType
-	Pos
-
+	SrcPos
 	counter string
 	start   node
 	test    node
@@ -95,46 +114,79 @@ type forNode struct {
 	body    node
 }
 
-// func NewForNode(t token, counter string, start, test, step, body node) *forNode {
-// 	return &forNode{nodeFor, t.pos, counter, start, test, step, body}
-// }
+func (n *forNode) String() string {
+	var b strings.Builder
+	b.WriteString("(for ")
+	b.WriteString(n.counter)
+	b.WriteString(" = ")
+	b.WriteString(fmt.Sprintf("%v", n.start))
+	b.WriteString(", ")
+	b.WriteString(fmt.Sprintf("%v", n.test))
+	if n.step != nil {
+		b.WriteString(", ")
+		b.WriteString(fmt.Sprintf("%v", n.step))
+	}
+	b.WriteString(" in ")
+	b.WriteString(fmt.Sprintf("%v", n.body))
+	b.WriteString(")")
+	return b.String()
+}
 
 type unaryNode struct {
 	nodeType
-	Pos
-
+	SrcPos
 	name    string
 	operand node
 }
 
+func (n *unaryNode) String() string {
+	return fmt.Sprintf("(%s%v)", n.name, n.operand)
+}
+
 type binaryNode struct {
 	nodeType
-	Pos
-
+	SrcPos
 	op    string
 	left  node
 	right node
 }
 
+func (n *binaryNode) String() string {
+	return fmt.Sprintf("(%s %v %v)", n.op, n.left, n.right)
+}
+
 type fnCallNode struct {
 	nodeType
-	Pos
-
+	SrcPos
 	callee string
-	args   [](node)
+	args   []node
+}
+
+func (n *fnCallNode) String() string {
+	var b strings.Builder
+	b.WriteString("(")
+	b.WriteString(n.callee)
+	for _, arg := range n.args {
+		b.WriteString(" ")
+		b.WriteString(fmt.Sprintf("%v", arg))
+	}
+	b.WriteString(")")
+	return b.String()
 }
 
 type variableNode struct {
 	nodeType
-	Pos
-
+	SrcPos
 	name string
+}
+
+func (n *variableNode) String() string {
+	return n.name
 }
 
 type variableExprNode struct {
 	nodeType
-	Pos
-
+	SrcPos
 	vars []struct {
 		name string
 		node node
@@ -142,27 +194,81 @@ type variableExprNode struct {
 	body node
 }
 
+func (n *variableExprNode) String() string {
+	var b strings.Builder
+	b.WriteString("(var ")
+	for i, v := range n.vars {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(v.name)
+		if v.node != nil {
+			b.WriteString(" = ")
+			b.WriteString(fmt.Sprintf("%v", v.node))
+		}
+	}
+	b.WriteString(" in ")
+	b.WriteString(fmt.Sprintf("%v", n.body))
+	b.WriteString(")")
+	return b.String()
+}
+
 type fnPrototypeNode struct {
 	nodeType
-	Pos
-
+	SrcPos
 	name       string
 	args       []string
 	isOperator bool
 	precedence int
 }
 
+func (n *fnPrototypeNode) String() string {
+	var b strings.Builder
+	if n.isOperator {
+		b.WriteString("operator ")
+	}
+	b.WriteString(n.name)
+	b.WriteString("(")
+	b.WriteString(strings.Join(n.args, ", "))
+	b.WriteString(")")
+	return b.String()
+}
+
 type functionNode struct {
 	nodeType
-	Pos
-
+	SrcPos
 	proto node
 	body  node
 }
 
+func (n *functionNode) String() string {
+	var b strings.Builder
+	p := n.proto.(*fnPrototypeNode)
+	if p.name == "" {
+		b.WriteString(fmt.Sprintf("%v", n.body))
+	} else {
+		b.WriteString("(def ")
+		b.WriteString(fmt.Sprintf("%v", n.proto))
+		b.WriteString(" ")
+		b.WriteString(fmt.Sprintf("%v", n.body))
+		b.WriteString(")")
+	}
+	return b.String()
+}
+
 type listNode struct {
 	nodeType
-	Pos
-
+	SrcPos
 	nodes []node
+}
+
+func (n *listNode) String() string {
+	var b strings.Builder
+	b.WriteString("(begin")
+	for _, node := range n.nodes {
+		b.WriteString("\n  ")
+		b.WriteString(fmt.Sprintf("%v", node))
+	}
+	b.WriteString(")")
+	return b.String()
 }

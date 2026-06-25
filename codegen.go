@@ -2,20 +2,20 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"tinygo.org/x/go-llvm"
 )
 
 var (
-	ctx             = llvm.NewContext()
-	builder         = ctx.NewBuilder()
-	rootModule      = ctx.NewModule("root")
-	rootFuncPassMgr = llvm.NewFunctionPassManagerForModule(rootModule)
-	options         = llvm.NewMCJITCompilerOptions()
-	namedVals       = map[string]llvm.Value{}
-	execEngine      llvm.ExecutionEngine
-	machine         llvm.TargetMachine
+	ctx        = llvm.NewContext()
+	builder    = ctx.NewBuilder()
+	rootModule = ctx.NewModule("root")
+	options    = llvm.NewMCJITCompilerOptions()
+	namedVals  = map[string]llvm.Value{}
+	execEngine llvm.ExecutionEngine
+	machine    llvm.TargetMachine
 )
 
 func initExecutionEngine() {
@@ -26,38 +26,35 @@ func initExecutionEngine() {
 
 	err = llvm.InitializeNativeTarget()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Native target initialization error:")
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(-1)
+		slog.Error("native target initialization failed", "error", err)
+		os.Exit(1)
 	}
 
 	err = llvm.InitializeNativeAsmPrinter()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ASM printer initialization error:")
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(-1)
+		slog.Error("ASM printer initialization failed", "error", err)
+		os.Exit(1)
 	}
 
 	target, err = llvm.GetTargetFromTriple(llvm.DefaultTargetTriple())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Cannot get target:")
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(-1)
+		slog.Error("cannot get target", "error", err)
+		os.Exit(1)
 	}
 
-	if *verbose {
-		fmt.Println("Initialize: TargetTriple = " + llvm.DefaultTargetTriple())
-		fmt.Println("Initialize: TargetDescription = " + target.Description())
-	}
+	slog.Debug("initialized",
+		"targetTriple", llvm.DefaultTargetTriple(),
+		"target", target.Description(),
+	)
 
 	machine = target.CreateTargetMachine(llvm.DefaultTargetTriple(),
 		"", "",
 		llvm.CodeGenLevelNone,
 		llvm.RelocDefault,
 		llvm.CodeModelSmall)
-	if *verbose {
-		fmt.Println("Initialize: TargetMachine.TargetData = " + machine.CreateTargetData().String())
-	}
+
+	targetData := machine.CreateTargetData()
+	slog.Debug("target machine created", "targetData", targetData.String())
 
 	options.SetMCJITOptimizationLevel(2)
 	options.SetMCJITEnableFastISel(true)
@@ -65,28 +62,34 @@ func initExecutionEngine() {
 	options.SetMCJITCodeModel(llvm.CodeModelDefault)
 	execEngine, err = llvm.NewMCJITCompiler(rootModule, options)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "JIT Compiler initialization error:")
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(-1)
+		slog.Error("JIT compiler initialization failed", "error", err)
+		os.Exit(1)
 	}
 
-	if *verbose {
-		fmt.Println("Initialize: ExecutionEngine.TargetData = " + execEngine.TargetData().String())
+	slog.Debug("execution engine ready", "targetData", execEngine.TargetData().String())
+	registerHostSymbols()
+}
+
+// registerHostSymbols maps the host C functions into the JIT so that
+// JIT-compiled code can call them by name.
+func registerHostSymbols() {
+	for name, addr := range hostSymbolAddrs() {
+		registerLLVMSymbol(name, addr)
 	}
 }
 
 func Optimize() {
-	// rootFuncPassMgr.Add(execEngine.TargetData())
-	rootFuncPassMgr.AddPromoteMemoryToRegisterPass()
-	rootFuncPassMgr.AddInstructionCombiningPass()
-	rootFuncPassMgr.AddReassociatePass()
-	rootFuncPassMgr.AddGVNPass()
-	rootFuncPassMgr.AddCFGSimplificationPass()
-	rootFuncPassMgr.InitializeFunc()
+	opts := llvm.NewPassBuilderOptions()
+	defer opts.Dispose()
+	err := rootModule.RunPasses("mem2reg,instcombine,reassociate,gvn,simplifycfg", machine, opts)
+	if err != nil {
+		slog.Error("optimization passes failed", "error", err)
+		os.Exit(1)
+	}
 }
 
 func createEntryBlockAlloca(f llvm.Value, name string) llvm.Value {
-	var tmpB = llvm.NewBuilder()
+	tmpB := ctx.NewBuilder()
 	tmpB.SetInsertPoint(f.EntryBasicBlock(), f.EntryBasicBlock().FirstInstruction())
 	return tmpB.CreateAlloca(ctx.DoubleType(), name)
 }
@@ -107,7 +110,7 @@ func (n *numberNode) codegen() llvm.Value {
 func (n *variableNode) codegen() llvm.Value {
 	v := namedVals[n.name]
 	if v.IsNil() {
-		return ErrorV("unknown variable name")
+		return ErrorV(fmt.Sprintf("unknown variable name: %s at %s", n.name, n.SrcPos))
 	}
 	return builder.CreateLoad(ctx.DoubleType(), v, n.name)
 }
@@ -115,7 +118,7 @@ func (n *variableNode) codegen() llvm.Value {
 func (n *ifNode) codegen() llvm.Value {
 	ifv := n.ifN.codegen()
 	if ifv.IsNil() {
-		return ErrorV("code generation failed for if expression")
+		return ErrorV("code generation failed for if condition")
 	}
 	ifv = builder.CreateFCmp(llvm.FloatONE, ifv, llvm.ConstFloat(ctx.DoubleType(), 0), "ifcond")
 
@@ -125,18 +128,14 @@ func (n *ifNode) codegen() llvm.Value {
 	mergeBlk := llvm.AddBasicBlock(parentFunc, "merge")
 	builder.CreateCondBr(ifv, thenBlk, elseBlk)
 
-	// generate 'then' block
 	builder.SetInsertPointAtEnd(thenBlk)
 	thenv := n.thenN.codegen()
 	if thenv.IsNil() {
 		return ErrorV("code generation failed for then expression")
 	}
 	builder.CreateBr(mergeBlk)
-	// Codegen of 'Then' can change the current block, update ThenBB for the PHI.
 	thenBlk = builder.GetInsertBlock()
 
-	// generate 'else' block
-	// C++ unknown eq: TheFunction->getBasicBlockList().push_back(ElseBB);
 	builder.SetInsertPointAtEnd(elseBlk)
 	elsev := n.elseN.codegen()
 	if elsev.IsNil() {
@@ -146,10 +145,10 @@ func (n *ifNode) codegen() llvm.Value {
 	elseBlk = builder.GetInsertBlock()
 
 	builder.SetInsertPointAtEnd(mergeBlk)
-	PhiNode := builder.CreatePHI(ctx.DoubleType(), "iftmp")
-	PhiNode.AddIncoming([]llvm.Value{thenv}, []llvm.BasicBlock{thenBlk})
-	PhiNode.AddIncoming([]llvm.Value{elsev}, []llvm.BasicBlock{elseBlk})
-	return PhiNode
+	phiNode := builder.CreatePHI(ctx.DoubleType(), "iftmp")
+	phiNode.AddIncoming([]llvm.Value{thenv}, []llvm.BasicBlock{thenBlk})
+	phiNode.AddIncoming([]llvm.Value{elsev}, []llvm.BasicBlock{elseBlk})
+	return phiNode
 }
 
 func (n *forNode) codegen() llvm.Value {
@@ -164,10 +163,8 @@ func (n *forNode) codegen() llvm.Value {
 	loopBlk := llvm.AddBasicBlock(parentFunc, "loop")
 
 	builder.CreateBr(loopBlk)
-
 	builder.SetInsertPointAtEnd(loopBlk)
 
-	// save higher levels' variables if we have the same name
 	oldVal := namedVals[n.counter]
 	namedVals[n.counter] = alloca
 
@@ -185,7 +182,6 @@ func (n *forNode) codegen() llvm.Value {
 		stepVal = llvm.ConstFloat(ctx.DoubleType(), 1)
 	}
 
-	// evaluate end condition before increment
 	endVal := n.test.codegen()
 	if endVal.IsNil() {
 		return endVal
@@ -197,9 +193,7 @@ func (n *forNode) codegen() llvm.Value {
 
 	endVal = builder.CreateFCmp(llvm.FloatONE, endVal, llvm.ConstFloat(ctx.DoubleType(), 0), "loopcond")
 	afterBlk := llvm.AddBasicBlock(parentFunc, "afterloop")
-
 	builder.CreateCondBr(endVal, loopBlk, afterBlk)
-
 	builder.SetInsertPointAtEnd(afterBlk)
 
 	if !oldVal.IsNil() {
@@ -217,16 +211,16 @@ func (n *unaryNode) codegen() llvm.Value {
 		return ErrorV("nil operand")
 	}
 
-	f := rootModule.NamedFunction("unary" + string(n.name))
+	f := rootModule.NamedFunction("unary" + n.name)
 	if f.IsNil() {
-		return ErrorV("unknown unary operator")
+		return ErrorV(fmt.Sprintf("unknown unary operator: %s", n.name))
 	}
 	ftyp := llvm.FunctionType(ctx.DoubleType(), []llvm.Type{ctx.DoubleType()}, false)
 	return builder.CreateCall(ftyp, f, []llvm.Value{operandValue}, "unop")
 }
 
 func (n *variableExprNode) codegen() llvm.Value {
-	var oldvars = []llvm.Value{}
+	oldvars := make([]llvm.Value, len(n.vars))
 
 	f := builder.GetInsertBlock().Parent()
 	for i := range n.vars {
@@ -237,26 +231,24 @@ func (n *variableExprNode) codegen() llvm.Value {
 		if node != nil {
 			val = node.codegen()
 			if val.IsNil() {
-				return val // nil
+				return val
 			}
-		} else { // if no initialized value set to 0
+		} else {
 			val = llvm.ConstFloat(ctx.DoubleType(), 0)
 		}
 
 		alloca := createEntryBlockAlloca(f, name)
 		builder.CreateStore(val, alloca)
 
-		oldvars = append(oldvars, namedVals[name])
+		oldvars[i] = namedVals[name]
 		namedVals[name] = alloca
 	}
 
-	// evaluate body now that vars are in scope
 	bodyVal := n.body.codegen()
 	if bodyVal.IsNil() {
-		return ErrorV("body returns nil") // nil
+		return ErrorV("body returns nil")
 	}
 
-	// pop old values
 	for i := range n.vars {
 		namedVals[n.vars[i].name] = oldvars[i]
 	}
@@ -267,19 +259,21 @@ func (n *variableExprNode) codegen() llvm.Value {
 func (n *fnCallNode) codegen() llvm.Value {
 	callee := rootModule.NamedFunction(n.callee)
 	if callee.IsNil() {
-		return ErrorV("unknown function referenced: " + n.callee)
+		return ErrorV(fmt.Sprintf("unknown function referenced: %s", n.callee))
 	}
 
 	if callee.ParamsCount() != len(n.args) {
-		return ErrorV("incorrect number of arguments passed")
+		return ErrorV(fmt.Sprintf("incorrect number of arguments passed to %s: expected %d, got %d",
+			n.callee, callee.ParamsCount(), len(n.args)))
 	}
 
-	args, argtyps := []llvm.Value{}, []llvm.Type{}
-	for _, arg := range n.args {
-		args = append(args, arg.codegen())
-		argtyps = append(argtyps, ctx.DoubleType())
-		if args[len(args)-1].IsNil() {
-			return ErrorV("an argument was nil")
+	args := make([]llvm.Value, len(n.args))
+	argtyps := make([]llvm.Type, len(n.args))
+	for i, arg := range n.args {
+		args[i] = arg.codegen()
+		argtyps[i] = ctx.DoubleType()
+		if args[i].IsNil() {
+			return ErrorV(fmt.Sprintf("argument %d to %s was nil", i, n.callee))
 		}
 	}
 
@@ -288,25 +282,22 @@ func (n *fnCallNode) codegen() llvm.Value {
 }
 
 func (n *binaryNode) codegen() llvm.Value {
-	// Special case '=' because we don't emit the LHS as an expression
 	if n.op == "=" {
 		l, ok := n.left.(*variableNode)
 		if !ok {
 			return ErrorV("destination of '=' must be a variable")
 		}
 
-		// get value
 		val := n.right.codegen()
 		if val.IsNil() {
 			return ErrorV("cannot assign null value")
 		}
 
-		// lookup location of variable from name
 		p := namedVals[l.name]
-
-		// store
+		if p.IsNil() {
+			return ErrorV(fmt.Sprintf("undefined variable: %s", l.name))
+		}
 		builder.CreateStore(val, p)
-
 		return val
 	}
 
@@ -325,13 +316,18 @@ func (n *binaryNode) codegen() llvm.Value {
 		return builder.CreateFMul(l, r, "multmp")
 	case "/":
 		return builder.CreateFDiv(l, r, "divtmp")
+	case "%":
+		return builder.CreateFRem(l, r, "modtmp")
 	case "<":
 		l = builder.CreateFCmp(llvm.FloatOLT, l, r, "cmptmp")
 		return builder.CreateUIToFP(l, ctx.DoubleType(), "booltmp")
+	case ">":
+		l = builder.CreateFCmp(llvm.FloatOGT, l, r, "cmptmp")
+		return builder.CreateUIToFP(l, ctx.DoubleType(), "booltmp")
 	default:
-		function := rootModule.NamedFunction("binary" + string(n.op))
+		function := rootModule.NamedFunction("binary" + n.op)
 		if function.IsNil() {
-			return ErrorV("invalid binary operator")
+			return ErrorV(fmt.Sprintf("invalid binary operator: %s", n.op))
 		}
 		ftyp := llvm.FunctionType(ctx.DoubleType(), []llvm.Type{ctx.DoubleType(), ctx.DoubleType()}, false)
 		return builder.CreateCall(ftyp, function, []llvm.Value{l, r}, "binop")
@@ -339,9 +335,9 @@ func (n *binaryNode) codegen() llvm.Value {
 }
 
 func (n *fnPrototypeNode) codegen() llvm.Value {
-	funcArgs := []llvm.Type{}
-	for range n.args {
-		funcArgs = append(funcArgs, ctx.DoubleType())
+	funcArgs := make([]llvm.Type, len(n.args))
+	for i := range n.args {
+		funcArgs[i] = ctx.DoubleType()
 	}
 	funcType := llvm.FunctionType(ctx.DoubleType(), funcArgs, false)
 	function := llvm.AddFunction(rootModule, n.name, funcType)
@@ -352,11 +348,11 @@ func (n *fnPrototypeNode) codegen() llvm.Value {
 	}
 
 	if function.BasicBlocksCount() != 0 {
-		return ErrorV("redefinition of function: " + n.name)
+		return ErrorV(fmt.Sprintf("redefinition of function: %s", n.name))
 	}
 
 	if function.ParamsCount() != len(n.args) {
-		return ErrorV("redefinition of function with different number of args")
+		return ErrorV(fmt.Sprintf("redefinition of function with different number of args: %s", n.name))
 	}
 
 	for i, param := range function.Params() {
@@ -369,16 +365,14 @@ func (n *fnPrototypeNode) codegen() llvm.Value {
 
 func (n *functionNode) codegen() llvm.Value {
 	namedVals = make(map[string]llvm.Value)
-	p := n.proto.(*fnPrototypeNode)
+	p, ok := n.proto.(*fnPrototypeNode)
+	if !ok {
+		return ErrorV("invalid prototype")
+	}
 	theFunction := n.proto.codegen()
 	if theFunction.IsNil() {
 		return ErrorV("prototype missing")
 	}
-
-	// if p.isOperator && len(p.args) == 2 {
-	// 	opChar, _ := utf8.DecodeLastRuneInString(p.name)
-	//  binaryOpPrecedence[opChar] = p.precedence
-	// }
 
 	block := llvm.AddBasicBlock(theFunction, "entry")
 	builder.SetInsertPointAtEnd(block)
@@ -388,15 +382,15 @@ func (n *functionNode) codegen() llvm.Value {
 	retVal := n.body.codegen()
 	if retVal.IsNil() {
 		theFunction.EraseFromParentAsFunction()
-		return ErrorV("function body")
+		return ErrorV("function body codegen failed")
 	}
 
 	builder.CreateRet(retVal)
 	if llvm.VerifyFunction(theFunction, llvm.PrintMessageAction) != nil {
 		theFunction.EraseFromParentAsFunction()
-		return ErrorV("function verifiction failed")
+		return ErrorV(fmt.Sprintf("function verification failed: %s", p.name))
 	}
 
-	rootFuncPassMgr.RunFunc(theFunction)
+	slog.Debug("compiled function", "name", p.name)
 	return theFunction
 }
