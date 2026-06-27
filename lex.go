@@ -79,7 +79,8 @@ const (
 	tokTypeFloat
 	tokUserUnaryOp
 	tokUserBinaryOp
-	tokQuotedOp // `op` quoted operator name
+	tokQuotedOp  // `op` quoted operator name
+	tokStringLit // 'string literal'
 	tokEqual
 	tokPlus
 	tokMinus
@@ -131,6 +132,7 @@ var tokenNames = map[tokenType]string{
 	tokTypeRune:    "rune",
 	tokTypeInt:     "int",
 	tokTypeFloat:   "float",
+	tokStringLit:   "StringLit",
 	tokEqual:       "=",
 	tokPlus:        "+",
 	tokMinus:       "-",
@@ -433,6 +435,8 @@ func lexTopLevel(l *lexer) stateFn {
 		return lexTopLevel
 	case r == '`':
 		return lexQuotedOp
+	case r == '\'':
+		return lexStringLit
 	case r == ':':
 		l.emit(tokColon)
 		return lexTopLevel
@@ -520,6 +524,50 @@ func lexQuotedOp(l *lexer) stateFn {
 		}
 		if r == eof || isEOL(r) {
 			return l.errorf("unterminated quoted operator, expected '`'")
+		}
+	}
+}
+
+// lexStringLit lexes a single-quoted string literal: 'hello world'.
+// The opening quote has already been consumed. Supports \' and \\ escapes.
+func lexStringLit(l *lexer) stateFn {
+	l.start = l.pos
+	l.colStart = l.pos
+	var buf strings.Builder
+	for {
+		r := l.next()
+		switch {
+		case r == '\'':
+			l.tokens <- token{
+				kind: tokStringLit,
+				pos:  l.srcPos(),
+				val:  buf.String(),
+			}
+			l.start = l.pos
+			l.colStart = l.pos
+			return lexTopLevel
+		case r == '\\':
+			next := l.next()
+			switch next {
+			case 'n':
+				buf.WriteByte('\n')
+			case 't':
+				buf.WriteByte('\t')
+			case 'r':
+				buf.WriteByte('\r')
+			case '\\':
+				buf.WriteByte('\\')
+			case '\'':
+				buf.WriteByte('\'')
+			case '0':
+				buf.WriteByte(0)
+			default:
+				buf.WriteRune(next)
+			}
+		case r == eof || isEOL(r):
+			return l.errorf("unterminated string literal, expected \"'\"")
+		default:
+			buf.WriteRune(r)
 		}
 	}
 }

@@ -115,7 +115,7 @@ func (p *parser) parseTypeRef() TypeKind {
 			return TypeStruct
 		}
 	}
-	return TypeStr // default type is now str
+	return TypeInt // default fallback if no type recognized
 }
 
 func (p *parser) parseDefinition() node {
@@ -280,7 +280,7 @@ func (p *parser) parseQuotedOpDef(pos SrcPos, opName string) node {
 		paramTypes: argTypes,
 		isOperator: true,
 		precedence: prec,
-		retType:    TypeStr, // default return type is now str
+		retType:    TypeInt, // default return type is int
 	}
 
 	// Parse body.
@@ -460,7 +460,7 @@ func (p *parser) parseOperatorPrototype(pos SrcPos, fnName string) node {
 		paramTypes: argTypes,
 		isOperator: kind != idef,
 		precedence: precedence,
-		retType:    TypeStr, // default return type is now str
+		retType:    TypeInt, // default return type is int
 	}
 }
 
@@ -472,7 +472,7 @@ func (p *parser) parsePrototypeWithName(pos SrcPos, fnName string) node {
 		return Error(p.token, err.Error())
 	}
 
-	retType := TypeStr // default return type is now str
+	retType := TypeInt // default return type is int (i64)
 	if p.token.kind == tokIdentifier && p.isTypeName(p.token.val) {
 		retType = p.parseTypeRef()
 	}
@@ -532,7 +532,7 @@ func (p *parser) parseParamList() ([]string, []TypeKind, error) {
 	for p.token.kind == tokIdentifier {
 		argName := p.token.val
 		p.next()
-		argType := TypeStr // default type is now str
+		argType := TypeInt // default type is int (i64)
 		if p.token.kind == tokIdentifier && p.isTypeName(p.token.val) {
 			argType = p.parseTypeRef()
 		}
@@ -561,7 +561,7 @@ func (p *parser) parseTopLevelExpr() node {
 		nodeType: nodeFnPrototype,
 		SrcPos:   pos,
 		name:     name,
-		retType:  TypeStr, // default return type is now str
+		retType:  TypeInt, // default return type is int
 	}
 	f := &functionNode{nodeFunction, pos, proto, e}
 	return f
@@ -627,10 +627,21 @@ func (p *parser) parsePrototype() node {
 	if kind != idef && len(argNames) != kind {
 		return Error(p.token, "invalid number of operands for operator")
 	}
-	// Extern functions wrap C functions that use double for all params and return.
+	// Extern functions wrap C functions. Untyped (default int) params are
+	// treated as double to match the libc math functions' signatures.
+	// Explicitly typed params (float, str, struct) keep their declared type.
 	for i := range argTypes {
-		if argTypes[i] == TypeInt || argTypes[i] == TypeStr {
+		if argTypes[i] == TypeInt { // TypeInt is the "untyped" default for params
 			argTypes[i] = TypeFloat
+		}
+	}
+	// Determine return type: if any param was explicitly typed as str, assume
+	// the extern returns a string pointer too; otherwise default to double.
+	retType := TypeFloat
+	for _, t := range argTypes {
+		if t == TypeStr {
+			retType = TypeStr
+			break
 		}
 	}
 	return &fnPrototypeNode{
@@ -641,7 +652,7 @@ func (p *parser) parsePrototype() node {
 		paramTypes: argTypes,
 		isOperator: kind != idef,
 		precedence: precedence,
-		retType:    TypeFloat,
+		retType:    retType,
 	}
 }
 
@@ -668,7 +679,7 @@ func (p *parser) parseUnary() node {
 		return nil
 	}
 
-	if p.token.kind < tokUserUnaryOp {
+	if p.token.kind < tokUserUnaryOp || p.token.kind == tokStringLit {
 		return p.parsePrimary()
 	}
 
@@ -743,6 +754,8 @@ func (p *parser) parsePrimary() node {
 		return p.parseBoolExpr(false)
 	case tokNil:
 		return p.parseNilExpr()
+	case tokStringLit:
+		return p.parseStringLit()
 	case tokLBrace:
 		return p.parseBlock()
 	case tokEndOfTokens:
@@ -882,6 +895,13 @@ func (p *parser) parseNilExpr() node {
 	pos := p.token.pos
 	p.next()
 	return &nilNode{nodeType: nodeNil, SrcPos: pos}
+}
+
+func (p *parser) parseStringLit() node {
+	pos := p.token.pos
+	val := p.token.val
+	p.next()
+	return &stringLitNode{nodeType: nodeStringLit, SrcPos: pos, val: val}
 }
 
 func (p *parser) parseIfExpr() node {
@@ -1054,5 +1074,8 @@ func Error(t token, str string) node {
 
 func ErrorV(str string) llvm.Value {
 	fmt.Fprintf(os.Stderr, "Error: %s\n", str)
-	return llvm.Value{nil}
+	// Avoid unkeyed composite literal (llvm.Value has a single private field);
+	// a zero-valued Value is the correct nil sentinel.
+	var zero llvm.Value
+	return zero
 }

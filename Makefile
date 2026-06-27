@@ -6,30 +6,33 @@ CGO_ENABLED = 1
 
 LDFLAGS = -s -w
 BUILDFLAGS = -trimpath
+# llvm21: select tinygo.org/x/go-llvm's llvm@21 config (per-version cgo
+# flags). Mirrored in `go env GOFLAGS` so gopls picks the same config.
+GOTAGS = llvm21
 
 # Detect OS-specific settings
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
-  # macOS: use Homebrew's llvm@20 to avoid libc++ version conflicts.
-  # The system shell profile may export CPLUS_INCLUDE_PATH / LIBRARY_PATH
-  # pointing at a newer LLVM (>=22), whose libc++ headers require Clang 22+.
-  # We unset those and let llvm@20's clang use its own bundled libc++.
-  LLVM_PREFIX := $(shell brew --prefix llvm@20 2>/dev/null)
+  # macOS: use llvm@21 — the highest version supported by
+  # tinygo.org/x/go-llvm (its per-version config files top out at 21).
+  # Using the matching Clang 21 keeps compiler and libc++ headers in sync.
+  LLVM_PREFIX := $(shell brew --prefix llvm@21 2>/dev/null)
   ifeq ($(LLVM_PREFIX),)
-    $(error llvm@20 not found. Install with: brew install llvm@20)
+    $(error llvm@21 not found. Install with: brew install llvm@21)
   endif
   CC := $(LLVM_PREFIX)/bin/clang
   CXX := $(LLVM_PREFIX)/bin/clang++
   # -Wl,-export_dynamic: export C symbols so the JIT can resolve them at runtime.
   CGO_LDFLAGS := -Wl,-export_dynamic
   # Match libLLVM.dylib's minimum OS (minos) to silence the deployment-target
-  # mismatch warning from ld. The dylib requires macOS 26.0+ anyway, so the
-  # resulting binary cannot run on older macOS regardless.
+  # mismatch warning from ld.
   MACOSX_DEPLOYMENT_TARGET := $(shell otool -l $(LLVM_PREFIX)/lib/libLLVM.dylib 2>/dev/null | awk '/minos/ {print $$2; exit}')
   ifeq ($(MACOSX_DEPLOYMENT_TARGET),)
     MACOSX_DEPLOYMENT_TARGET := 26.0
   endif
-  # Ensure the system linker (not Android NDK's) is found first.
+  # Ensure the system linker (not Android NDK's) is found first. Also unset
+  # CPLUS_INCLUDE_PATH / C_INCLUDE_PATH / LIBRARY_PATH in case the shell
+  # profile points them at a different LLVM version.
   CLEAN_PATH := /Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin
   ENV := env -u CPLUS_INCLUDE_PATH -u C_INCLUDE_PATH -u LIBRARY_PATH \
     PATH="$(CLEAN_PATH):$(LLVM_PREFIX)/bin:$$PATH" \
@@ -49,11 +52,14 @@ all: build
 
 build:
 	$(ENV) CGO_ENABLED=$(CGO_ENABLED) \
-		$(GO) build $(BUILDFLAGS) -ldflags="$(LDFLAGS)" -o ./$(BINARY)
+		$(GO) build $(BUILDFLAGS) -tags=$(GOTAGS) -ldflags="$(LDFLAGS)" -o ./$(BINARY)
 
 test:
-	$(GO) vet ./...
-	$(ENV) $(GO) build ./...
+	# -unsafeptr=false: exec.go legitimately converts a JIT C function address
+	# (uint64 from LLVM) to unsafe.Pointer via uintptr; this is not a Go pointer
+	# and cannot be relocated by the GC. See exec.go for details.
+	$(ENV) $(GO) vet -tags=$(GOTAGS) -unsafeptr=false ./...
+	$(ENV) $(GO) test -tags=$(GOTAGS) ./...
 
 clean:
 	rm -f $(BINARY) *.o *.tok *.ast

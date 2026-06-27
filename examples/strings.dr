@@ -1,0 +1,10 @@
+# String literal and print_str example
+extern print_str(s str)
+
+# Sequencing operator: evaluate x, then return y
+def `:` binary:1 (x, y) y
+
+def main()
+  print_str('Hello, Deer!') :
+  print_str('Strings with single quotes') :
+  print_str('Escapes: \t tab, \n newline, \\ backslash, \' quote')

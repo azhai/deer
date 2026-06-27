@@ -57,6 +57,7 @@ const (
 	nodeStructDef   // struct definition
 	nodeStructLit   // struct literal
 	nodeBlock       // { expr1; expr2; ... }
+	nodeStringLit   // 'string literal'
 )
 
 var nodeTypeNames = map[nodeType]string{
@@ -79,6 +80,7 @@ var nodeTypeNames = map[nodeType]string{
 	nodeStructDef:    "StructDef",
 	nodeStructLit:    "StructLit",
 	nodeBlock:        "Block",
+	nodeStringLit:    "StringLit",
 }
 
 func (t nodeType) String() string {
@@ -334,6 +336,37 @@ type nilNode struct {
 }
 
 func (n *nilNode) String() string { return "nil" }
+
+// stringLitNode represents a single-quoted string literal: 'hello'.
+type stringLitNode struct {
+	nodeType
+	SrcPos
+	val string
+}
+
+func (n *stringLitNode) String() string {
+	// Re-escape for display.
+	var b strings.Builder
+	b.WriteByte('\'')
+	for _, r := range n.val {
+		switch r {
+		case '\n':
+			b.WriteString("\\n")
+		case '\t':
+			b.WriteString("\\t")
+		case '\r':
+			b.WriteString("\\r")
+		case '\\':
+			b.WriteString("\\\\")
+		case '\'':
+			b.WriteString("\\'")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('\'')
+	return b.String()
+}
 
 // selfNode represents the $ receiver reference inside a method.
 type selfNode struct {
