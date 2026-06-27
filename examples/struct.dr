@@ -1,0 +1,19 @@
+# Struct definition with fields
+def Point struct {
+    .x int,
+    .y int,
+}
+
+# Methods use $ as the receiver
+def Point.GetX() int {
+    $.x
+}
+
+def Point.GetY() int {
+    $.y
+}
+
+# Method with parameters
+def Point.Add(x int, y int) int {
+    $.x + $.y + x + y
+}

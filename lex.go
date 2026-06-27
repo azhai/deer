@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 )
@@ -48,6 +49,10 @@ const (
 	tokComma
 	tokLeftParen
 	tokRightParen
+	tokLBrace
+	tokRBrace
+	tokDot
+	tokDollar
 	tokNumber
 	tokIdentifier
 	tokKeyword
@@ -61,8 +66,20 @@ const (
 	tokBinary
 	tokUnary
 	tokVariable
+	tokStruct
+	tokNil
+	tokTrue
+	tokFalse
+	tokTypeVoid
+	tokTypeBool
+	tokTypeByte
+	tokTypeShort
+	tokTypeRune
+	tokTypeInt
+	tokTypeFloat
 	tokUserUnaryOp
 	tokUserBinaryOp
+	tokQuotedOp // `op` quoted operator name
 	tokEqual
 	tokPlus
 	tokMinus
@@ -87,6 +104,10 @@ var tokenNames = map[tokenType]string{
 	tokComma:       "Comma",
 	tokLeftParen:   "LeftParen",
 	tokRightParen:  "RightParen",
+	tokLBrace:      "LBrace",
+	tokRBrace:      "RBrace",
+	tokDot:         "Dot",
+	tokDollar:      "Dollar",
 	tokNumber:      "Number",
 	tokIdentifier:  "Identifier",
 	tokDefine:      "def",
@@ -99,6 +120,17 @@ var tokenNames = map[tokenType]string{
 	tokBinary:      "binary",
 	tokUnary:       "unary",
 	tokVariable:    "var",
+	tokStruct:      "struct",
+	tokNil:         "nil",
+	tokTrue:        "true",
+	tokFalse:       "false",
+	tokTypeVoid:    "void",
+	tokTypeBool:    "bool",
+	tokTypeByte:    "byte",
+	tokTypeShort:   "short",
+	tokTypeRune:    "rune",
+	tokTypeInt:     "int",
+	tokTypeFloat:   "float",
 	tokEqual:       "=",
 	tokPlus:        "+",
 	tokMinus:       "-",
@@ -129,6 +161,10 @@ var key = map[string]tokenType{
 	"binary": tokBinary,
 	"unary":  tokUnary,
 	"var":    tokVariable,
+	"struct": tokStruct,
+	"nil":    tokNil,
+	"true":   tokTrue,
+	"false":  tokFalse,
 }
 
 var op = map[rune]tokenType{
@@ -168,6 +204,7 @@ type lexer struct {
 	parenDepth    int
 	tokens        chan token
 	userOperators map[rune]userOpType
+	opMu          sync.Mutex // protects userOperators
 }
 
 func Lex() *lexer {
@@ -178,6 +215,33 @@ func Lex() *lexer {
 	}
 	go l.run()
 	return l
+}
+
+// RegisterBinaryOp registers a single-char binary operator so the lexer
+// emits it as tokUserBinaryOp instead of its default token kind.
+func (l *lexer) RegisterBinaryOp(r rune) {
+	l.opMu.Lock()
+	defer l.opMu.Unlock()
+	l.userOperators[r] = uopBinaryOp
+}
+
+// RegisterUnaryOp registers a single-char unary operator.
+func (l *lexer) RegisterUnaryOp(r rune) {
+	l.opMu.Lock()
+	defer l.opMu.Unlock()
+	l.userOperators[r] = uopUnaryOp
+}
+
+func (l *lexer) isUserBinaryOp(r rune) bool {
+	l.opMu.Lock()
+	defer l.opMu.Unlock()
+	return l.userOperators[r] == uopBinaryOp
+}
+
+func (l *lexer) isUserUnaryOp(r rune) bool {
+	l.opMu.Lock()
+	defer l.opMu.Unlock()
+	return l.userOperators[r] == uopUnaryOp
 }
 
 func (l *lexer) Add(f *os.File) {
@@ -334,7 +398,25 @@ func lexTopLevel(l *lexer) stateFn {
 			return l.errorf("unexpected right paren")
 		}
 		return lexTopLevel
-	case '0' <= r && r <= '9', r == '.':
+	case r == '{':
+		l.emit(tokLBrace)
+		return lexTopLevel
+	case r == '}':
+		l.emit(tokRBrace)
+		return lexTopLevel
+	case r == '$':
+		l.emit(tokDollar)
+		return lexTopLevel
+	case r == '.':
+		// If next char is a digit, lex as number; otherwise emit dot.
+		r2 := l.peek()
+		if r2 >= '0' && r2 <= '9' {
+			l.backup()
+			return lexNumber
+		}
+		l.emit(tokDot)
+		return lexTopLevel
+	case '0' <= r && r <= '9':
 		l.backup()
 		return lexNumber
 	case isAlphaNumeric(r):
@@ -343,12 +425,14 @@ func lexTopLevel(l *lexer) stateFn {
 	case op[r] > tokUserBinaryOp:
 		l.emit(op[r])
 		return lexTopLevel
-	case l.userOperators[r] == uopBinaryOp:
+	case l.isUserBinaryOp(r):
 		l.emit(tokUserBinaryOp)
 		return lexTopLevel
-	case l.userOperators[r] == uopUnaryOp:
+	case l.isUserUnaryOp(r):
 		l.emit(tokUserUnaryOp)
 		return lexTopLevel
+	case r == '`':
+		return lexQuotedOp
 	case r == ':':
 		l.emit(tokColon)
 		return lexTopLevel
@@ -392,34 +476,12 @@ func lexIdentifier(l *lexer) stateFn {
 			word := l.word()
 			if key[word] > tokKeyword {
 				l.emit(key[word])
-				switch word {
-				case "binary":
-					return lexUserBinaryOp
-				case "unary":
-					return lexUserUnaryOp
-				}
 			} else {
 				l.emit(tokIdentifier)
 			}
 			return lexTopLevel
 		}
 	}
-}
-
-func lexUserBinaryOp(l *lexer) stateFn {
-	globWhitespace(l)
-	r := l.next()
-	l.userOperators[r] = uopBinaryOp
-	l.emit(tokUserBinaryOp)
-	return lexTopLevel
-}
-
-func lexUserUnaryOp(l *lexer) stateFn {
-	globWhitespace(l)
-	r := l.next()
-	l.userOperators[r] = uopUnaryOp
-	l.emit(tokUserUnaryOp)
-	return lexTopLevel
 }
 
 func isSpace(r rune) bool {
@@ -432,4 +494,32 @@ func isEOL(r rune) bool {
 
 func isAlphaNumeric(r rune) bool {
 	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
+// lexQuotedOp reads a backtick-quoted operator name (e.g. `+`, `!`).
+// The opening backtick has already been consumed by lexTopLevel.
+func lexQuotedOp(l *lexer) stateFn {
+	// l.start still points before the opening backtick; advance it past the
+	// backtick so l.word() returns only the operator name (e.g. ":" not "`:`").
+	l.start = l.pos
+	l.colStart = l.pos
+	for {
+		r := l.next()
+		if r == '`' {
+			// l.pos is just past the closing backtick; trim it from the word
+			// by backing up the emit boundary.
+			word := l.line[l.start : l.pos-1]
+			l.tokens <- token{
+				kind: tokQuotedOp,
+				pos:  l.srcPos(),
+				val:  word,
+			}
+			l.start = l.pos
+			l.colStart = l.pos
+			return lexTopLevel
+		}
+		if r == eof || isEOL(r) {
+			return l.errorf("unterminated quoted operator, expected '`'")
+		}
+	}
 }

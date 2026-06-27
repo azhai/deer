@@ -5,10 +5,10 @@ extern println(x)
 extern printd(x)
 
 # Define a low-precedence sequencing operator
-def binary : 1 (x, y) y
+def `:` binary:1 (x, y) y
 
 # Iterative Fibonacci
-def fibi(x)
+def fibi(x int)
   var a = 0, b = 1, c in
   (for i = 2, i < x, 1 in
      c = a + b :

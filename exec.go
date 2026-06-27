@@ -66,8 +66,17 @@ func Exec(roots <-chan node) {
 				slog.Error("failed to get function address", "name", name)
 				continue
 			}
-			result := callNativeFunc(unsafe.Pointer(uintptr(addr)))
-			slog.Debug("evaluated expression", "result", result)
+			fnPtr := unsafe.Pointer(uintptr(addr))
+			// Check return type to call the right native function.
+			fn := rootModule.NamedFunction(name)
+			retType := fn.GlobalValueType().ReturnType()
+			if retType == ctx.Int64Type() {
+				result := callNativeFuncInt(fnPtr)
+				slog.Debug("evaluated expression", "result", result)
+			} else {
+				result := callNativeFunc(fnPtr)
+				slog.Debug("evaluated expression", "result", result)
+			}
 		}
 	}
 }

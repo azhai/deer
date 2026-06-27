@@ -57,22 +57,22 @@ Usage
 -----
 ```bash
 # JIT execute a program
-./deer -e examples/hello.deer
+./deer -e examples/hello.dr
 
 # Compile to native executable
-./deer -o hello examples/hello.deer && ./hello
+./deer -o hello examples/hello.dr && ./hello
 
 # Dump tokens
-./deer -o /tmp/hello.tok examples/hello.deer
+./deer -o /tmp/hello.tok examples/hello.dr
 
 # Dump AST
-./deer -o /tmp/hello.ast examples/hello.deer
+./deer -o /tmp/hello.ast examples/hello.dr
 
 # Dump LLVM IR
-./deer -d examples/hello.deer
+./deer -d examples/hello.dr
 
 # Verbose debug output
-./deer -v -e examples/hello.deer
+./deer -v -e examples/hello.dr
 ```
 
 Language Syntax
@@ -112,10 +112,10 @@ def printstars(n)
 Examples
 --------
 See the [examples/](examples/) directory:
-- [hello.deer](examples/hello.deer) - Print "Hello" using ASCII codes
-- [math.deer](examples/math.deer) - Math function examples
-- [operators.deer](examples/operators.deer) - User-defined operators
-- [fib.deer](examples/fib.deer) - Iterative Fibonacci
+- [hello.dr](examples/hello.dr) - Print "Hello" using ASCII codes
+- [math.dr](examples/math.dr) - Math function examples
+- [operators.dr](examples/operators.dr) - User-defined operators
+- [fib.dr](examples/fib.dr) - Iterative Fibonacci
 
 Built-in functions
 ------------------

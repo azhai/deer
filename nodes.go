@@ -49,6 +49,14 @@ const (
 	nodeFnPrototype
 	nodeFunction
 	nodeList
+	nodeBool
+	nodeNil
+	nodeSelf        // $ receiver reference
+	nodeFieldAccess // expr.field
+	nodeMethodCall  // expr.method(args)
+	nodeStructDef   // struct definition
+	nodeStructLit   // struct literal
+	nodeBlock       // { expr1; expr2; ... }
 )
 
 var nodeTypeNames = map[nodeType]string{
@@ -63,6 +71,14 @@ var nodeTypeNames = map[nodeType]string{
 	nodeFnPrototype:  "FnProto",
 	nodeFunction:     "Function",
 	nodeList:         "List",
+	nodeBool:         "Bool",
+	nodeNil:          "Nil",
+	nodeSelf:         "Self",
+	nodeFieldAccess:  "FieldAccess",
+	nodeMethodCall:   "MethodCall",
+	nodeStructDef:    "StructDef",
+	nodeStructLit:    "StructLit",
+	nodeBlock:        "Block",
 }
 
 func (t nodeType) String() string {
@@ -75,10 +91,14 @@ func (t nodeType) String() string {
 type numberNode struct {
 	nodeType
 	SrcPos
-	val float64
+	val   float64
+	isInt bool
 }
 
 func (n *numberNode) String() string {
+	if n.isInt {
+		return fmt.Sprintf("%d", int64(n.val))
+	}
 	return fmt.Sprintf("%g", n.val)
 }
 
@@ -216,10 +236,13 @@ func (n *variableExprNode) String() string {
 type fnPrototypeNode struct {
 	nodeType
 	SrcPos
-	name       string
-	args       []string
-	isOperator bool
-	precedence int
+	name         string
+	args         []string
+	isOperator   bool
+	precedence   int
+	paramTypes   []TypeKind // type for each parameter (TypeInt if unspecified)
+	retType      TypeKind   // return type (TypeInt if unspecified)
+	receiverType string     // struct type name for method receiver (empty for plain functions)
 }
 
 func (n *fnPrototypeNode) String() string {
@@ -227,10 +250,27 @@ func (n *fnPrototypeNode) String() string {
 	if n.isOperator {
 		b.WriteString("operator ")
 	}
+	if n.receiverType != "" {
+		b.WriteString(n.receiverType)
+		b.WriteString(".")
+	}
 	b.WriteString(n.name)
 	b.WriteString("(")
-	b.WriteString(strings.Join(n.args, ", "))
+	for i, arg := range n.args {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(arg)
+		if i < len(n.paramTypes) && n.paramTypes[i] != TypeInt {
+			b.WriteString(" ")
+			b.WriteString(n.paramTypes[i].String())
+		}
+	}
 	b.WriteString(")")
+	if n.retType != TypeInt && n.retType != TypeVoid {
+		b.WriteString(" ")
+		b.WriteString(n.retType.String())
+	}
 	return b.String()
 }
 
@@ -268,6 +308,136 @@ func (n *listNode) String() string {
 	for _, node := range n.nodes {
 		b.WriteString("\n  ")
 		b.WriteString(fmt.Sprintf("%v", node))
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+// --- New nodes for type system ---
+
+type boolNode struct {
+	nodeType
+	SrcPos
+	val bool
+}
+
+func (n *boolNode) String() string {
+	if n.val {
+		return "true"
+	}
+	return "false"
+}
+
+type nilNode struct {
+	nodeType
+	SrcPos
+}
+
+func (n *nilNode) String() string { return "nil" }
+
+// selfNode represents the $ receiver reference inside a method.
+type selfNode struct {
+	nodeType
+	SrcPos
+	structName string // resolved struct type name (set during parsing)
+}
+
+func (n *selfNode) String() string { return "$" }
+
+// fieldAccessNode represents expr.field access.
+type fieldAccessNode struct {
+	nodeType
+	SrcPos
+	object node
+	field  string
+}
+
+func (n *fieldAccessNode) String() string {
+	return fmt.Sprintf("%v.%s", n.object, n.field)
+}
+
+// methodCallNode represents expr.method(args...) call.
+type methodCallNode struct {
+	nodeType
+	SrcPos
+	object node
+	method string
+	args   []node
+}
+
+func (n *methodCallNode) String() string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("%v.%s(", n.object, n.method))
+	for i, arg := range n.args {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(fmt.Sprintf("%v", arg))
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+// structDefNode represents a struct type definition.
+type structDefNode struct {
+	nodeType
+	SrcPos
+	name   string
+	parent string
+	fields []StructField
+}
+
+func (n *structDefNode) String() string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("(struct %s", n.name))
+	if n.parent != "" {
+		b.WriteString(fmt.Sprintf(" : %s", n.parent))
+	}
+	for _, f := range n.fields {
+		b.WriteString(fmt.Sprintf("\n  .%s %s", f.Name, f.Type))
+	}
+	b.WriteString(")")
+	return b.String()
+}
+
+// structLitNode represents a struct literal expression.
+type structLitNode struct {
+	nodeType
+	SrcPos
+	typeName string
+	fields   []struct {
+		name string
+		val  node
+	}
+}
+
+func (n *structLitNode) String() string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("(%s{", n.typeName))
+	for i, f := range n.fields {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(fmt.Sprintf("%s: %v", f.name, f.val))
+	}
+	b.WriteString("})")
+	return b.String()
+}
+
+// blockNode represents a block of expressions { expr1; expr2; ... }.
+// Returns the value of the last expression.
+type blockNode struct {
+	nodeType
+	SrcPos
+	stmts []node
+}
+
+func (n *blockNode) String() string {
+	var b strings.Builder
+	b.WriteString("(block")
+	for _, s := range n.stmts {
+		b.WriteString("\n  ")
+		b.WriteString(fmt.Sprintf("%v", s))
 	}
 	b.WriteString(")")
 	return b.String()

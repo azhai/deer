@@ -1,26 +1,26 @@
-# User-defined operator examples
+# User-defined operator examples (new syntax)
 extern printd(x)
 
 # Logical not (unary)
-def unary !(v)
+def `!` unary (v)
   if v then 0 else 1
 
 # Pair sequencing operator (low precedence)
-def binary : 1 (x, y) y
+def `:` binary:1 (x, y) y
 
 # Define logical operators before ^ (which uses them in its body)
-def binary & 60 (a, b)
+def `&` binary:60 (a, b)
   if a then if b then 1 else 0 else 0
 
-def binary | 70 (a, b)
+def `|` binary:70 (a, b)
   if a then 1 else if b then 1 else 0
 
 # Binary XOR (precedence 50): uses | and & defined above
-def binary ^ 50 (a, b)
+def `^` binary:50 (a, b)
   (a | b) - (a & b)
 
 # Bitwise not (unary)
-def unary ~(v) !v
+def `~` unary (v) !v
 
 def main()
   printd(!0) :       # 1

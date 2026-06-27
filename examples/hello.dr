@@ -3,7 +3,7 @@ extern putchard(x)
 extern printd(x)
 
 # Sequencing operator: evaluate x, then return y
-def binary : 1 (x, y) y
+def `:` binary:1 (x, y) y
 
 def newline() putchard(10)
 

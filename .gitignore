@@ -24,4 +24,5 @@ deer
 .idea/
 .vscode/
 bin/
+specs/
 vendor/

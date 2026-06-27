@@ -6,7 +6,7 @@ extern sin_(x)
 extern cos_(x)
 
 # Sequencing operator: evaluate x, then return y
-def binary : 1 (x, y) y
+def `:` binary:1 (x, y) y
 
 # Calculate hypoteneuse
 def hypot(x, y)

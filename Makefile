@@ -22,12 +22,20 @@ ifeq ($(UNAME_S),Darwin)
   CXX := $(LLVM_PREFIX)/bin/clang++
   # -Wl,-export_dynamic: export C symbols so the JIT can resolve them at runtime.
   CGO_LDFLAGS := -Wl,-export_dynamic
+  # Match libLLVM.dylib's minimum OS (minos) to silence the deployment-target
+  # mismatch warning from ld. The dylib requires macOS 26.0+ anyway, so the
+  # resulting binary cannot run on older macOS regardless.
+  MACOSX_DEPLOYMENT_TARGET := $(shell otool -l $(LLVM_PREFIX)/lib/libLLVM.dylib 2>/dev/null | awk '/minos/ {print $$2; exit}')
+  ifeq ($(MACOSX_DEPLOYMENT_TARGET),)
+    MACOSX_DEPLOYMENT_TARGET := 26.0
+  endif
   # Ensure the system linker (not Android NDK's) is found first.
   CLEAN_PATH := /Library/Developer/CommandLineTools/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin
   ENV := env -u CPLUS_INCLUDE_PATH -u C_INCLUDE_PATH -u LIBRARY_PATH \
     PATH="$(CLEAN_PATH):$(LLVM_PREFIX)/bin:$$PATH" \
     CC="$(CC)" CXX="$(CXX)" \
-    CGO_LDFLAGS="$(CGO_LDFLAGS)"
+    CGO_LDFLAGS="$(CGO_LDFLAGS)" \
+    MACOSX_DEPLOYMENT_TARGET="$(MACOSX_DEPLOYMENT_TARGET)"
 else
   # Linux: rely on system clang/llvm-config.
   CC ?= clang
@@ -52,26 +60,26 @@ clean:
 
 # Run all examples in JIT mode
 examples: build
-	@for f in $(EXAMPLES)/*.deer; do \
+	@for f in $(EXAMPLES)/*.dr; do \
 		echo "=== $$f ==="; \
 		./$(BINARY) -e "$$f" 2>&1; \
 	done
 
 run: build
-	./$(BINARY) -e $(EXAMPLES)/hello.deer
+	./$(BINARY) -e $(EXAMPLES)/hello.dr
 
 tok: build
-	./$(BINARY) -o /tmp/hello.tok $(EXAMPLES)/hello.deer
+	./$(BINARY) -o /tmp/hello.tok $(EXAMPLES)/hello.dr
 	@echo "=== Tokens ==="
 	@cat /tmp/hello.tok
 
 ast: build
-	./$(BINARY) -o /tmp/hello.ast $(EXAMPLES)/hello.deer
+	./$(BINARY) -o /tmp/hello.ast $(EXAMPLES)/hello.dr
 	@echo "=== AST ==="
 	@cat /tmp/hello.ast
 
 ir: build
-	./$(BINARY) -d $(EXAMPLES)/hello.deer
+	./$(BINARY) -d $(EXAMPLES)/hello.dr
 
 fmt:
 	gofmt -w -s .

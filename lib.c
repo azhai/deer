@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <math.h>
+#include <stdint.h>
 
 double printd(double x) {
 	printf("%g\n", x);
@@ -21,6 +22,20 @@ double putchard(double x) {
 
 double println(double x) {
 	printf("result: %0.6f\n", x);
+	fflush(stdout);
+	return x;
+}
+
+/* Print a 64-bit integer */
+int64_t print_int(int64_t x) {
+	printf("%ld\n", (long)x);
+	fflush(stdout);
+	return x;
+}
+
+/* Print a boolean value */
+int64_t print_bool(int64_t x) {
+	printf(x ? "true\n" : "false\n");
 	fflush(stdout);
 	return x;
 }
@@ -51,6 +66,8 @@ void* get_printd_addr(void) { return (void*)printd; }
 void* get_printi_addr(void) { return (void*)printi; }
 void* get_putchard_addr(void) { return (void*)putchard; }
 void* get_println_addr(void) { return (void*)println; }
+void* get_print_int_addr(void) { return (void*)print_int; }
+void* get_print_bool_addr(void) { return (void*)print_bool; }
 void* get_acos__addr(void) { return (void*)acos_; }
 void* get_asin__addr(void) { return (void*)asin_; }
 void* get_atan__addr(void) { return (void*)atan_; }
@@ -75,4 +92,9 @@ void* get_tanh__addr(void) { return (void*)tanh_; }
 /* Call a no-arg function pointer that returns double. */
 double call_fn_ptr(void* fn) {
 	return ((double (*)())fn)();
+}
+
+/* Call a no-arg function pointer that returns int64. */
+int64_t call_fn_int_ptr(void* fn) {
+	return ((int64_t (*)())fn)();
 }

@@ -95,7 +95,7 @@ func main() {
 		}
 	}
 
-	nodes := Parse(tokens)
+	nodes := Parse(tokens, lex)
 	if *dumpIR {
 		EmitIR(nodes)
 	}
@@ -127,12 +127,29 @@ func main() {
 			if runtime.GOOS != "darwin" {
 				args = append(args, "-lm")
 			}
-			cmd := exec.Command("clang", args...)
+			// On macOS prefer the system clang (linked against the system
+			// linker) for the final link step: Homebrew's llvm@20 clang
+			// defaults to LLD which has trouble with macOS platform_version.
+			cc := os.Getenv("CC")
+			if runtime.GOOS == "darwin" {
+				if sysClang := "/Library/Developer/CommandLineTools/usr/bin/clang"; fileExists(sysClang) {
+					cc = sysClang
+				}
+			}
+			if cc == "" {
+				cc = "clang"
+			}
+			cmd := exec.Command(cc, args...)
 			slog.Debug("linking", "cmd", cmd.String())
 			handleError(true, "build failure:", cmd.Run())
 			os.Chmod(*output, 0755)
 		}
 	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func handleError(isExit bool, msg string, err error) {
