@@ -66,6 +66,11 @@ func Exec(roots <-chan node) {
 				slog.Error("failed to get function address", "name", name)
 				continue
 			}
+			// addr is a JIT-compiled C function address from LLVM, not a Go
+			// pointer, so converting uint64 -> uintptr -> unsafe.Pointer is
+			// safe: no GC can relocate it. (go vet's unsafeptr check cannot
+			// tell this apart from a hazardous Go-pointer round-trip, so the
+			// check is disabled in the Makefile's vet step.)
 			fnPtr := unsafe.Pointer(uintptr(addr))
 			// Check return type to call the right native function.
 			fn := rootModule.NamedFunction(name)

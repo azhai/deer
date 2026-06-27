@@ -9,15 +9,16 @@ import (
 )
 
 var (
-	ctx             = llvm.NewContext()
-	builder         = ctx.NewBuilder()
-	rootModule      = ctx.NewModule("root")
-	options         = llvm.NewMCJITCompilerOptions()
-	namedVals       = map[string]llvm.Value{}
-	namedTypes      = map[string]llvm.Type{} // element type of each named alloca (needed for opaque pointers)
-	execEngine      llvm.ExecutionEngine
-	machine         llvm.TargetMachine
-	llvmStructTypes = map[string]llvm.Type{} // struct name → LLVM type
+	ctx              = llvm.NewContext()
+	builder          = ctx.NewBuilder()
+	rootModule       = ctx.NewModule("root")
+	options          = llvm.NewMCJITCompilerOptions()
+	namedVals        = map[string]llvm.Value{}
+	namedTypes       = map[string]llvm.Type{} // element type of each named alloca (needed for opaque pointers)
+	execEngine       llvm.ExecutionEngine
+	machine          llvm.TargetMachine
+	llvmStructTypes  = map[string]llvm.Type{} // struct name → LLVM type
+	stringLitCounter int                      // counter for unique string literal global names
 )
 
 func initExecutionEngine() {
@@ -107,6 +108,9 @@ func llvmTypeFor(k TypeKind) llvm.Type {
 		return ctx.Int64Type()
 	case TypeFloat:
 		return ctx.DoubleType()
+	case TypeStr:
+		// str is represented as i8* (pointer to null-terminated byte buffer).
+		return llvm.PointerType(ctx.Int8Type(), 0)
 	default:
 		return ctx.Int64Type()
 	}
@@ -555,6 +559,21 @@ func (n *boolNode) codegen() llvm.Value {
 
 func (n *nilNode) codegen() llvm.Value {
 	return llvm.ConstNull(ctx.Int64Type())
+}
+
+func (n *stringLitNode) codegen() llvm.Value {
+	// Create a global constant for the string literal and return a pointer to it.
+	strType := llvm.ArrayType(ctx.Int8Type(), len(n.val)+1) // +1 for null terminator
+	globalName := fmt.Sprintf(".str.%d", stringLitCounter)
+	stringLitCounter++
+	globalVar := llvm.AddGlobal(rootModule, strType, globalName)
+	globalVar.SetInitializer(llvm.ConstString(n.val+"\x00", false))
+	globalVar.SetGlobalConstant(true)
+	globalVar.SetUnnamedAddr(true)
+	globalVar.SetLinkage(llvm.PrivateLinkage)
+	// Return a pointer to the first byte (i8*), GEP from [N x i8] to i8.
+	zero := llvm.ConstInt(ctx.Int64Type(), 0, false)
+	return builder.CreateGEP(strType, globalVar, []llvm.Value{zero, zero}, "strptr")
 }
 
 func (n *selfNode) codegen() llvm.Value {

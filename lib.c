@@ -40,6 +40,13 @@ int64_t print_bool(int64_t x) {
 	return x;
 }
 
+/* Print a null-terminated string */
+const char* print_str(const char* s) {
+	printf("%s\n", s);
+	fflush(stdout);
+	return s;
+}
+
 double acos_(double x) { return acos(x); }
 double asin_(double x) { return asin(x); }
 double atan_(double x) { return atan(x); }
@@ -68,6 +75,7 @@ void* get_putchard_addr(void) { return (void*)putchard; }
 void* get_println_addr(void) { return (void*)println; }
 void* get_print_int_addr(void) { return (void*)print_int; }
 void* get_print_bool_addr(void) { return (void*)print_bool; }
+void* get_print_str_addr(void) { return (void*)print_str; }
 void* get_acos__addr(void) { return (void*)acos_; }
 void* get_asin__addr(void) { return (void*)asin_; }
 void* get_atan__addr(void) { return (void*)atan_; }

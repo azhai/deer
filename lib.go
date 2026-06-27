@@ -13,6 +13,7 @@ extern double putchard(double x);
 extern double println(double x);
 extern int64_t print_int(int64_t x);
 extern int64_t print_bool(int64_t x);
+extern const char* print_str(const char* s);
 extern double acos_(double x);
 extern double asin_(double x);
 extern double atan_(double x);
@@ -40,6 +41,7 @@ extern void* get_putchard_addr(void);
 extern void* get_println_addr(void);
 extern void* get_print_int_addr(void);
 extern void* get_print_bool_addr(void);
+extern void* get_print_str_addr(void);
 extern void* get_acos__addr(void);
 extern void* get_asin__addr(void);
 extern void* get_atan__addr(void);
@@ -83,6 +85,7 @@ func hostSymbolAddrs() map[string]unsafe.Pointer {
 		"println":    unsafe.Pointer(C.get_println_addr()),
 		"print_int":  unsafe.Pointer(C.get_print_int_addr()),
 		"print_bool": unsafe.Pointer(C.get_print_bool_addr()),
+		"print_str":  unsafe.Pointer(C.get_print_str_addr()),
 		"acos_":      unsafe.Pointer(C.get_acos__addr()),
 		"asin_":      unsafe.Pointer(C.get_asin__addr()),
 		"atan_":      unsafe.Pointer(C.get_atan__addr()),
