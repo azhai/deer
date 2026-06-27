@@ -1,1 +1,0 @@
-/opt/repos/design/AGENTS.md
